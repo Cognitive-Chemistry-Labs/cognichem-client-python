@@ -1,27 +1,27 @@
 [build-system]
-requires = ["setuptools==80.10.2"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
-
-[tool.setuptools]
-include-package-data = true
-
-[tool.setuptools.packages.find]
-where = ["cognichem_client"]
 
 [project]
 name = "cognichem-client"
 version = "0.1.0"
+description = "Python client for the CogniChem API"
 authors = [
     { name = "Travis Kessler", email = "travis@cognichem.com" }
 ]
-description = "Python client for the CogniChem API"
+license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.8"
-dependencies = ["requests"]
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "Operating System :: OS Independent"
+dependencies = [
+    "requests",
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/Cognitive-Chemistry-Labs/cognichem-client-python"
+Homepage = "https://github.com/Cognitive-Chemistry-Labs/cognichem-client-python"
+
+[tool.setuptools.packages.find]
+where = ["cognichem_client"]
+exclude = ["cognichem_client.egg-info"]
+
+[tool.setuptools]
+include-package-data = true
