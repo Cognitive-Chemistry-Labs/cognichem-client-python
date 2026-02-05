@@ -20,7 +20,7 @@ dependencies = [
 Homepage = "https://github.com/Cognitive-Chemistry-Labs/cognichem-client-python"
 
 [tool.setuptools.packages.find]
-where = ["cognichem_client"]
+where = ["."]
 exclude = ["cognichem_client.egg-info"]
 
 [tool.setuptools]
