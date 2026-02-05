@@ -1,4 +1,4 @@
-# ![CogniChem Logo](https://cognichem.com/images/cc-logo-color.svg)
+![CogniChem Logo](https://cognichem.com/images/cc-logo-color.svg)
 # CogniChem Python Client
 
 ## Installation
