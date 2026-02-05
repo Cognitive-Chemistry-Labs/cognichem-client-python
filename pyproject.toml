@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[project]
+name = "cognichem-client"
+version = "0.1.0"
+authors = [
+    { name = "Travis Kessler", email = "travis@cognichem.com" }
+]
+description = "Python client for the CogniChem API"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = ["requests"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/Cognitive-Chemistry-Labs/cognichem-client-python"
