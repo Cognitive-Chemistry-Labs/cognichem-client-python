@@ -1,3 +1,13 @@
+# The configuration constants defined in this file are used throughout the
+# client implementation to construct API request URLs and manage interactions
+# with the CogniChem API.
+
+# The constants defined in this file include:
+# - HOSTNAME: The base URL for the CogniChem API.
+# - API_V1_STR: The version string for the API endpoints.
+# - ROUTE_MAP: A dictionary mapping endpoint names to their respective URL
+#   paths.
+
 HOSTNAME = "https://api.cognichem.com"
 API_V1_STR = "/api/v1"
 ROUTE_MAP = {

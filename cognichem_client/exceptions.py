@@ -1,4 +1,7 @@
 class CogniChemAPIError(Exception):
+    """
+    Custom exception for handling API errors from the CogniChem API.
+    """
     
     def __init__(self, response):
 
