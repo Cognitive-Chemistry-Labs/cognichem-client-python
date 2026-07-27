@@ -1,4 +1,45 @@
-"""Route map and catalog constants mirrored from the CogniChem API contract."""
+"""Route map and catalog constants mirrored from the CogniChem API contract.
+
+Attributes
+----------
+DEFAULT_BASE_URL : str
+    Default API origin used by sync and async clients.
+API_V1_STR : str
+    Versioned API path prefix (``/api/v1``).
+ROUTES : dict of str to str
+    Named endpoint path map mirroring back-end ``Settings.ROUTE_MAP``.
+JobType : typing.Literal
+    Allowed long-running job type string literals.
+JOB_TYPES : frozenset of str
+    Runtime set of supported job type strings.
+UtilityType : typing.Literal
+    Allowed utility type string literals.
+UTILITY_TYPES : frozenset of str
+    Runtime set of supported utility type strings.
+ModelType : typing.Literal
+    Allowed inference model family string literals.
+MODEL_TYPES : frozenset of str
+    Runtime set of supported model type strings.
+Resource : typing.Literal
+    Allowed compute resource tier string literals.
+RESOURCES : frozenset of str
+    Runtime set of supported resource tier strings.
+JOB_TERMINAL_STATUSES : frozenset of str
+    Terminal statuses for long-running jobs (``completed``, ``error``,
+    ``cancelled``).
+POLLABLE_TERMINAL_STATUSES : frozenset of str
+    Default terminal statuses used by shared polling helpers.
+DEFAULT_JOB_POLL_INTERVAL : float
+    Default seconds between job status polls.
+DEFAULT_JOB_TIMEOUT : float
+    Default maximum seconds to wait for a job to finish.
+DEFAULT_FAST_POLL_INTERVAL : float
+    Default seconds between inference/utility status polls.
+DEFAULT_FAST_TIMEOUT : float
+    Default maximum seconds to wait for inference/utility completion.
+DEFAULT_HTTP_TIMEOUT : float
+    Default per-request HTTP timeout in seconds.
+"""
 
 from __future__ import annotations
 

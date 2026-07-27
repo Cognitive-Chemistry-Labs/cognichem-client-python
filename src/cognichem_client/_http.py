@@ -16,6 +16,18 @@ _FILENAME_RE = re.compile(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', re.IGNORECA
 
 
 def _parse_filename(content_disposition: str | None) -> str | None:
+    """Parse a filename from a ``Content-Disposition`` header.
+
+    Parameters
+    ----------
+    content_disposition : str or None
+        Raw header value, if present.
+
+    Returns
+    -------
+    str or None
+        Extracted filename, or ``None`` if not found.
+    """
     if not content_disposition:
         return None
     match = _FILENAME_RE.search(content_disposition)
@@ -25,6 +37,25 @@ def _parse_filename(content_disposition: str | None) -> str | None:
 
 
 class _BaseHttp:
+    """Shared configuration and header helpers for HTTP clients.
+
+    Parameters
+    ----------
+    base_url : str, optional
+        API origin without a trailing slash requirement.
+    api_key : str or None, optional
+        API key secret for ``X-Api-Key`` authentication.
+    access_token : str or None, optional
+        JWT for ``Authorization: Bearer`` authentication.
+    timeout : float, optional
+        Default request timeout in seconds.
+
+    Raises
+    ------
+    ValueError
+        If neither ``api_key`` nor ``access_token`` is provided.
+    """
+
     def __init__(
         self,
         *,
@@ -33,6 +64,24 @@ class _BaseHttp:
         access_token: str | None = None,
         timeout: float = DEFAULT_HTTP_TIMEOUT,
     ) -> None:
+        """Validate credentials and store transport settings.
+
+        Parameters
+        ----------
+        base_url : str, optional
+            API origin.
+        api_key : str or None, optional
+            API key secret.
+        access_token : str or None, optional
+            JWT access token.
+        timeout : float, optional
+            Default request timeout in seconds.
+
+        Raises
+        ------
+        ValueError
+            If neither ``api_key`` nor ``access_token`` is provided.
+        """
         if not api_key and not access_token:
             raise ValueError("Provide api_key or access_token")
         self.base_url = base_url.rstrip("/")
@@ -47,6 +96,23 @@ class _BaseHttp:
         content_type: str | None = "application/json",
         prefer_bearer: bool = False,
     ) -> dict[str, str]:
+        """Build request headers for the next call.
+
+        Parameters
+        ----------
+        idempotency_key : str or None, optional
+            Optional ``Idempotency-Key`` for mutating POSTs.
+        content_type : str or None, optional
+            ``Content-Type`` header value, or ``None`` to omit it.
+        prefer_bearer : bool, optional
+            When ``True`` and an access token is available, send Bearer auth
+            only (needed for JWT-only routes such as API key management).
+
+        Returns
+        -------
+        dict of str to str
+            Headers to pass to httpx.
+        """
         headers: dict[str, str] = {}
         if content_type:
             headers["Content-Type"] = content_type
@@ -64,16 +130,54 @@ class _BaseHttp:
         return headers
 
     def url(self, path: str) -> str:
+        """Join ``base_url`` with an API path.
+
+        Parameters
+        ----------
+        path : str
+            Absolute path under the API origin (e.g. ``/api/v1/jobs/submit``).
+
+        Returns
+        -------
+        str
+            Absolute request URL.
+        """
         return urljoin(f"{self.base_url}/", path.lstrip("/"))
 
     def use_access_token(self, access_token: str) -> None:
+        """Store a JWT access token for subsequent requests.
+
+        Parameters
+        ----------
+        access_token : str
+            Bearer token value.
+        """
         self.access_token = access_token
 
     def use_api_key(self, api_key: str) -> None:
+        """Store an API key for subsequent requests.
+
+        Parameters
+        ----------
+        api_key : str
+            Raw API key secret.
+        """
         self.api_key = api_key
 
     @staticmethod
     def _raise_if_error(response: httpx.Response) -> None:
+        """Raise a typed client error for non-success HTTP responses.
+
+        Parameters
+        ----------
+        response : httpx.Response
+            Completed HTTP response.
+
+        Raises
+        ------
+        CogniChemError
+            When ``response.is_success`` is false.
+        """
         if response.is_success:
             return
         try:
@@ -88,6 +192,18 @@ class _BaseHttp:
 
     @staticmethod
     def _binary_result(response: httpx.Response) -> BinaryResult:
+        """Wrap a binary HTTP response as a :class:`BinaryResult`.
+
+        Parameters
+        ----------
+        response : httpx.Response
+            Successful response with binary content.
+
+        Returns
+        -------
+        BinaryResult
+            Content bytes plus optional filename and media type.
+        """
         return BinaryResult(
             content=response.content,
             filename=_parse_filename(response.headers.get("Content-Disposition")),
@@ -96,6 +212,23 @@ class _BaseHttp:
 
 
 class HttpClient(_BaseHttp):
+    """Synchronous httpx transport used by resource classes.
+
+    Parameters
+    ----------
+    base_url : str, optional
+        API origin.
+    api_key : str or None, optional
+        API key secret.
+    access_token : str or None, optional
+        JWT access token.
+    timeout : float, optional
+        Default request timeout in seconds.
+    client : httpx.Client or None, optional
+        Optional preconfigured httpx client. When omitted, this class owns
+        and closes its own client.
+    """
+
     def __init__(
         self,
         *,
@@ -105,6 +238,21 @@ class HttpClient(_BaseHttp):
         timeout: float = DEFAULT_HTTP_TIMEOUT,
         client: httpx.Client | None = None,
     ) -> None:
+        """Create or adopt a synchronous httpx client.
+
+        Parameters
+        ----------
+        base_url : str, optional
+            API origin.
+        api_key : str or None, optional
+            API key secret.
+        access_token : str or None, optional
+            JWT access token.
+        timeout : float, optional
+            Default request timeout in seconds.
+        client : httpx.Client or None, optional
+            Optional preconfigured httpx client.
+        """
         super().__init__(
             base_url=base_url,
             api_key=api_key,
@@ -115,13 +263,33 @@ class HttpClient(_BaseHttp):
         self._client = client or httpx.Client(timeout=timeout)
 
     def close(self) -> None:
+        """Close the owned httpx client, if any.
+
+        Returns
+        -------
+        None
+        """
         if self._owns_client:
             self._client.close()
 
     def __enter__(self) -> HttpClient:
+        """Enter a context manager that closes the client on exit.
+
+        Returns
+        -------
+        HttpClient
+            This transport instance.
+        """
         return self
 
     def __exit__(self, *args: object) -> None:
+        """Exit the context manager and close the client.
+
+        Parameters
+        ----------
+        *args : object
+            Standard context-manager exception info (unused).
+        """
         self.close()
 
     def request(
@@ -137,6 +305,40 @@ class HttpClient(_BaseHttp):
         prefer_bearer: bool = False,
         expect_json: bool = True,
     ) -> Any:
+        """Send an HTTP request and return JSON or binary content.
+
+        Parameters
+        ----------
+        method : str
+            HTTP method (``GET``, ``POST``, ``DELETE``, …).
+        path : str
+            API path under the configured base URL.
+        params : dict or None, optional
+            Query string parameters.
+        json : any, optional
+            JSON body (encoded by httpx).
+        data : any, optional
+            Form or raw body (e.g. OAuth2 password form).
+        idempotency_key : str or None, optional
+            Optional ``Idempotency-Key`` header.
+        content_type : str or None, optional
+            ``Content-Type`` header value.
+        prefer_bearer : bool, optional
+            Prefer Bearer auth over API key when both are available.
+        expect_json : bool, optional
+            When ``True``, parse and return JSON. When ``False``, return a
+            :class:`BinaryResult`.
+
+        Returns
+        -------
+        any
+            Parsed JSON, ``None`` for empty bodies, or :class:`BinaryResult`.
+
+        Raises
+        ------
+        CogniChemError
+            On non-success HTTP responses.
+        """
         response = self._client.request(
             method,
             self.url(path),
@@ -158,6 +360,22 @@ class HttpClient(_BaseHttp):
 
 
 class AsyncHttpClient(_BaseHttp):
+    """Asynchronous httpx transport used by async resource classes.
+
+    Parameters
+    ----------
+    base_url : str, optional
+        API origin.
+    api_key : str or None, optional
+        API key secret.
+    access_token : str or None, optional
+        JWT access token.
+    timeout : float, optional
+        Default request timeout in seconds.
+    client : httpx.AsyncClient or None, optional
+        Optional preconfigured async httpx client.
+    """
+
     def __init__(
         self,
         *,
@@ -167,6 +385,21 @@ class AsyncHttpClient(_BaseHttp):
         timeout: float = DEFAULT_HTTP_TIMEOUT,
         client: httpx.AsyncClient | None = None,
     ) -> None:
+        """Create or adopt an asynchronous httpx client.
+
+        Parameters
+        ----------
+        base_url : str, optional
+            API origin.
+        api_key : str or None, optional
+            API key secret.
+        access_token : str or None, optional
+            JWT access token.
+        timeout : float, optional
+            Default request timeout in seconds.
+        client : httpx.AsyncClient or None, optional
+            Optional preconfigured async httpx client.
+        """
         super().__init__(
             base_url=base_url,
             api_key=api_key,
@@ -177,13 +410,33 @@ class AsyncHttpClient(_BaseHttp):
         self._client = client or httpx.AsyncClient(timeout=timeout)
 
     async def aclose(self) -> None:
+        """Close the owned async httpx client, if any.
+
+        Returns
+        -------
+        None
+        """
         if self._owns_client:
             await self._client.aclose()
 
     async def __aenter__(self) -> AsyncHttpClient:
+        """Enter an async context manager that closes the client on exit.
+
+        Returns
+        -------
+        AsyncHttpClient
+            This transport instance.
+        """
         return self
 
     async def __aexit__(self, *args: object) -> None:
+        """Exit the async context manager and close the client.
+
+        Parameters
+        ----------
+        *args : object
+            Standard context-manager exception info (unused).
+        """
         await self.aclose()
 
     async def request(
@@ -199,6 +452,40 @@ class AsyncHttpClient(_BaseHttp):
         prefer_bearer: bool = False,
         expect_json: bool = True,
     ) -> Any:
+        """Send an async HTTP request and return JSON or binary content.
+
+        Parameters
+        ----------
+        method : str
+            HTTP method (``GET``, ``POST``, ``DELETE``, …).
+        path : str
+            API path under the configured base URL.
+        params : dict or None, optional
+            Query string parameters.
+        json : any, optional
+            JSON body (encoded by httpx).
+        data : any, optional
+            Form or raw body.
+        idempotency_key : str or None, optional
+            Optional ``Idempotency-Key`` header.
+        content_type : str or None, optional
+            ``Content-Type`` header value.
+        prefer_bearer : bool, optional
+            Prefer Bearer auth over API key when both are available.
+        expect_json : bool, optional
+            When ``True``, parse and return JSON. When ``False``, return a
+            :class:`BinaryResult`.
+
+        Returns
+        -------
+        any
+            Parsed JSON, ``None`` for empty bodies, or :class:`BinaryResult`.
+
+        Raises
+        ------
+        CogniChemError
+            On non-success HTTP responses.
+        """
         response = await self._client.request(
             method,
             self.url(path),

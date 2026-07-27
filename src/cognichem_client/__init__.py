@@ -1,4 +1,8 @@
-"""CogniChem Python client for the public compute API."""
+"""Public package entry for the CogniChem Python client.
+
+Re-exports the sync and async clients, common response types, catalog
+constants, and exception classes used by application code.
+"""
 
 from cognichem_client.async_client import AsyncCogniChem
 from cognichem_client.client import CogniChem

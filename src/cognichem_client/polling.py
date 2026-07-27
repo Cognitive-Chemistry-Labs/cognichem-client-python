@@ -23,7 +23,36 @@ def wait_for_terminal(
     terminal_statuses: frozenset[str] = POLLABLE_TERMINAL_STATUSES,
     raise_on_failure: bool = False,
 ) -> ProcessStatus:
-    """Poll ``status_fn`` until a terminal status or timeout."""
+    """Poll ``status_fn`` until a terminal status or timeout.
+
+    Parameters
+    ----------
+    status_fn : callable
+        Zero-argument callable returning a :class:`ProcessStatus`.
+    poll_interval : float
+        Seconds to sleep between polls.
+    timeout : float
+        Maximum seconds to wait before raising :class:`PollTimeoutError`.
+    terminal_statuses : frozenset of str, optional
+        Status strings treated as terminal.
+    raise_on_failure : bool, optional
+        When ``True``, raise if the terminal status is ``error`` or
+        ``cancelled``.
+
+    Returns
+    -------
+    ProcessStatus
+        Final terminal status payload.
+
+    Raises
+    ------
+    PollTimeoutError
+        If ``timeout`` elapses before a terminal status.
+    ProcessFailedError
+        If ``raise_on_failure`` is true and status is ``error``.
+    ProcessCancelledError
+        If ``raise_on_failure`` is true and status is ``cancelled``.
+    """
     deadline = time.monotonic() + timeout
     while True:
         status = status_fn()
@@ -48,7 +77,36 @@ async def await_for_terminal(
     terminal_statuses: frozenset[str] = POLLABLE_TERMINAL_STATUSES,
     raise_on_failure: bool = False,
 ) -> ProcessStatus:
-    """Async variant of :func:`wait_for_terminal`."""
+    """Asynchronously poll ``status_fn`` until a terminal status or timeout.
+
+    Parameters
+    ----------
+    status_fn : callable
+        Zero-argument async callable returning a :class:`ProcessStatus`.
+    poll_interval : float
+        Seconds to sleep between polls.
+    timeout : float
+        Maximum seconds to wait before raising :class:`PollTimeoutError`.
+    terminal_statuses : frozenset of str, optional
+        Status strings treated as terminal.
+    raise_on_failure : bool, optional
+        When ``True``, raise if the terminal status is ``error`` or
+        ``cancelled``.
+
+    Returns
+    -------
+    ProcessStatus
+        Final terminal status payload.
+
+    Raises
+    ------
+    PollTimeoutError
+        If ``timeout`` elapses before a terminal status.
+    ProcessFailedError
+        If ``raise_on_failure`` is true and status is ``error``.
+    ProcessCancelledError
+        If ``raise_on_failure`` is true and status is ``cancelled``.
+    """
     deadline = time.monotonic() + timeout
     while True:
         status = await status_fn()
@@ -66,6 +124,20 @@ async def await_for_terminal(
 
 
 def _raise_if_failed(status: ProcessStatus) -> None:
+    """Raise for failed or cancelled terminal statuses.
+
+    Parameters
+    ----------
+    status : ProcessStatus
+        Terminal status payload.
+
+    Raises
+    ------
+    ProcessFailedError
+        When ``status.status`` is ``error``.
+    ProcessCancelledError
+        When ``status.status`` is ``cancelled``.
+    """
     if status.status == "error":
         raise ProcessFailedError(
             status.message or f"Process {status.process_id} failed",
