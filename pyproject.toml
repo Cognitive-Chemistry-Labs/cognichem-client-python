@@ -1,27 +1,77 @@
 [build-system]
-requires = ["setuptools==76.1.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "cognichem-client"
-version = "0.1.1"
+version = "1.0.0"
 description = "Python client for the CogniChem API"
 authors = [
     { name = "Travis Kessler", email = "travis@cognichem.com" }
 ]
 license = { file = "LICENSE" }
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
-    "requests",
+    "httpx>=0.27",
+    "pydantic>=2",
+]
+keywords = ["cognichem", "chemistry", "api", "client"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "respx>=0.21",
+    "ruff>=0.9",
+    "mypy>=1.14",
 ]
 
 [project.urls]
 Homepage = "https://github.com/Cognitive-Chemistry-Labs/cognichem-client-python"
+Documentation = "https://github.com/Cognitive-Chemistry-Labs/cognichem-client-python#readme"
+Issues = "https://github.com/Cognitive-Chemistry-Labs/cognichem-client-python/issues"
+Changelog = "https://github.com/Cognitive-Chemistry-Labs/cognichem-client-python/blob/main/CHANGELOG.md"
 
-[tool.setuptools.packages.find]
-where = ["."]
-exclude = ["cognichem_client.egg-info"]
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/examples",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+    "/scripts",
+]
 
-[tool.setuptools]
-include-package-data = true
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+packages = ["cognichem_client"]
+mypy_path = "src"
