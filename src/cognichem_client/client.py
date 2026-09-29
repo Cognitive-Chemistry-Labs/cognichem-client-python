@@ -5,13 +5,21 @@ from __future__ import annotations
 import os
 
 from cognichem_client._http import HttpClient
-from cognichem_client.constants import DEFAULT_BASE_URL, DEFAULT_HTTP_TIMEOUT
+from cognichem_client.constants import DEFAULT_BASE_URL, DEFAULT_HTTP_TIMEOUT, ROUTES
 from cognichem_client.resources.api_keys import ApiKeysResource
+from cognichem_client.resources.artifacts import ArtifactsResource
 from cognichem_client.resources.auth import AuthResource
+from cognichem_client.resources.chat import ChatResource
+from cognichem_client.resources.events import EventsResource
 from cognichem_client.resources.inference import InferenceResource
 from cognichem_client.resources.jobs import JobsResource
+from cognichem_client.resources.lookup import LookupResource
+from cognichem_client.resources.reference import ReferenceResource
 from cognichem_client.resources.usage import UsageResource
 from cognichem_client.resources.utils import UtilsResource
+from cognichem_client.resources.wallet import WalletResource
+from cognichem_client.resources.workflows import WorkflowsResource
+from cognichem_client.types import HealthResponse
 
 
 class CogniChem:
@@ -44,6 +52,22 @@ class CogniChem:
         Short-running utility endpoints.
     usage : UsageResource
         Usage limit queries.
+    workflows : WorkflowsResource
+        Workflow validate / estimate / templates, plus ``runs`` and
+        ``definitions``.
+    artifacts : ArtifactsResource
+        Durable job / workflow artifacts (list, inspect, upload, download).
+    events : EventsResource
+        Job and workflow run completion events feed.
+    wallet : WalletResource
+        Wallet balance.
+    lookup : LookupResource
+        Science database lookups (PubChem, ChEMBL, Open Targets, UniProt,
+        RCSB PDB).
+    reference : ReferenceResource
+        Reference-KG literature search.
+    chat : ChatResource
+        CogniChem Assistant chat (JWT only).
     """
 
     def __init__(
@@ -79,6 +103,13 @@ class CogniChem:
         self.inference = InferenceResource(self._http)
         self.utils = UtilsResource(self._http)
         self.usage = UsageResource(self._http)
+        self.workflows = WorkflowsResource(self._http)
+        self.artifacts = ArtifactsResource(self._http)
+        self.events = EventsResource(self._http)
+        self.wallet = WalletResource(self._http)
+        self.lookup = LookupResource(self._http)
+        self.reference = ReferenceResource(self._http)
+        self.chat = ChatResource(self._http)
 
     @classmethod
     def from_env(
@@ -118,6 +149,33 @@ class CogniChem:
             base_url=os.environ.get(base_url_var) or None,
             timeout=timeout,
         )
+
+    def health(self) -> HealthResponse:
+        """Check API liveness (``GET /health``, no auth needed).
+
+        Returns
+        -------
+        HealthResponse
+            ``status`` is ``ok`` when the API is up.
+        """
+        data = self._http.request("GET", ROUTES["health"])
+        return HealthResponse.model_validate(data)
+
+    def ready(self) -> HealthResponse:
+        """Check API readiness (``GET /ready``, no auth needed).
+
+        Returns
+        -------
+        HealthResponse
+            ``status`` is ``ready`` when dependencies are reachable.
+
+        Raises
+        ------
+        ServerError
+            When the API is not ready (503).
+        """
+        data = self._http.request("GET", ROUTES["ready"])
+        return HealthResponse.model_validate(data)
 
     def close(self) -> None:
         """Close the underlying HTTP client and free connections.

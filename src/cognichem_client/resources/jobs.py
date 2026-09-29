@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from cognichem_client._http import AsyncHttpClient, HttpClient
+from cognichem_client._http import AsyncHttpClient, HttpClient, ensure_idempotency_key
 from cognichem_client.constants import (
     DEFAULT_JOB_POLL_INTERVAL,
     DEFAULT_JOB_TIMEOUT,
@@ -16,6 +16,7 @@ from cognichem_client.constants import (
 from cognichem_client.polling import await_for_terminal, wait_for_terminal
 from cognichem_client.types import (
     BinaryResult,
+    JobEstimateResponse,
     JobInfoResponse,
     JobSubmitMultipleResponse,
     JobSubmitRequest,
@@ -50,6 +51,44 @@ def _maybe_save(result: BinaryResult, save_path: str | Path | None) -> BinaryRes
         path = path / filename
     path.write_bytes(result.content)
     return result
+
+
+def _list_params(
+    *,
+    limit: int | None,
+    offset: int | None,
+    status: str | Sequence[str] | None,
+    job_type: str | None,
+    q: str | None,
+    sort: str | None,
+) -> dict[str, Any] | None:
+    """Build ``GET /jobs/list`` query parameters, dropping unset values.
+
+    Parameters
+    ----------
+    limit, offset : int or None
+        Pagination.
+    status : str or sequence of str or None
+        Status filter (joined with commas).
+    job_type, q, sort : str or None
+        Other filters.
+
+    Returns
+    -------
+    dict or None
+        Query parameters, or ``None`` when nothing is set.
+    """
+    if status is not None and not isinstance(status, str):
+        status = ",".join(status)
+    params = {
+        "limit": limit,
+        "offset": offset,
+        "status": status,
+        "job_type": job_type,
+        "q": q,
+        "sort": sort,
+    }
+    return {k: v for k, v in params.items() if v is not None} or None
 
 
 class JobsResource:
@@ -93,7 +132,8 @@ class JobsResource:
         resource : str, optional
             Compute resource tier (default ``default``).
         idempotency_key : str or None, optional
-            Optional idempotency key for safe retries.
+            Idempotency key for safe retries. A random key is generated when
+            omitted (API-key callers must send one).
 
         Returns
         -------
@@ -109,7 +149,7 @@ class JobsResource:
                 "payload": payload,
                 "resource": resource,
             },
-            idempotency_key=idempotency_key,
+            idempotency_key=ensure_idempotency_key(idempotency_key),
         )
         return JobSubmitResponse.model_validate(data)
 
@@ -126,7 +166,8 @@ class JobsResource:
         jobs : sequence of JobSubmitRequest or dict
             Job specifications to submit.
         idempotency_key : str or None, optional
-            Optional idempotency key for safe retries.
+            Idempotency key for safe retries. A random key is generated when
+            omitted (API-key callers must send one).
 
         Returns
         -------
@@ -142,19 +183,92 @@ class JobsResource:
             "POST",
             ROUTES["jobs_submit_multiple"],
             json=body,
-            idempotency_key=idempotency_key,
+            idempotency_key=ensure_idempotency_key(idempotency_key),
         )
         return JobSubmitMultipleResponse.model_validate(data)
 
-    def list(self) -> ListJobsResponse:
-        """List jobs belonging to the authenticated caller.
+    def estimate(
+        self,
+        job_type: str,
+        payload: dict[str, Any],
+        *,
+        resource: str = "default",
+    ) -> JobEstimateResponse:
+        """Estimate the wallet hold for one job at the caller's tier.
+
+        Uses the same catalog reservation math as submit. Incomplete payloads
+        may still return a scaled estimate (``assumptions["validated"]`` is
+        false).
+
+        Parameters
+        ----------
+        job_type : str
+            Catalog job type.
+        payload : dict
+            Type-specific request payload.
+        resource : str, optional
+            Compute resource tier (default ``default``).
+
+        Returns
+        -------
+        JobEstimateResponse
+            Estimated cost, tier, rate, and assumptions.
+        """
+        data = self._http.request(
+            "POST",
+            ROUTES["jobs_estimate"],
+            json={"job_type": job_type, "payload": payload, "resource": resource},
+        )
+        return JobEstimateResponse.model_validate(data)
+
+    def list(
+        self,
+        *,
+        limit: int | None = None,
+        offset: int | None = None,
+        status: str | Sequence[str] | None = None,
+        job_type: str | None = None,
+        q: str | None = None,
+        sort: str | None = None,
+    ) -> ListJobsResponse:
+        """List standalone jobs belonging to the authenticated caller.
+
+        Workflow step jobs are excluded. Results are paginated.
+
+        Parameters
+        ----------
+        limit : int or None, optional
+            Page size (1-100).
+        offset : int or None, optional
+            Page offset.
+        status : str or sequence of str or None, optional
+            Keep only these statuses (e.g. ``["queued", "running"]``).
+        job_type : str or None, optional
+            Keep only this catalog job type.
+        q : str or None, optional
+            Case-insensitive job name search.
+        sort : str or None, optional
+            ``created_at``, ``finished_at``, ``runtime_seconds``, or
+            ``job_name``; prefix ``-`` for descending (default
+            ``-created_at``).
 
         Returns
         -------
         ListJobsResponse
-            Job summaries for the current account.
+            Page of jobs (``items`` carries full rows).
         """
-        data = self._http.request("GET", ROUTES["jobs_list"])
+        data = self._http.request(
+            "GET",
+            ROUTES["jobs_list"],
+            params=_list_params(
+                limit=limit,
+                offset=offset,
+                status=status,
+                job_type=job_type,
+                q=q,
+                sort=sort,
+            ),
+        )
         return ListJobsResponse.model_validate(data)
 
     def info(self, process_id: str) -> JobInfoResponse:
@@ -357,7 +471,8 @@ class JobsResource:
         resource : str, optional
             Compute resource tier (default ``default``).
         idempotency_key : str or None, optional
-            Optional idempotency key for safe retries.
+            Idempotency key for safe retries. A random key is generated when
+            omitted (API-key callers must send one).
         poll_interval : float, optional
             Seconds between status polls.
         timeout : float, optional
@@ -437,7 +552,8 @@ class AsyncJobsResource:
         resource : str, optional
             Compute resource tier (default ``default``).
         idempotency_key : str or None, optional
-            Optional idempotency key for safe retries.
+            Idempotency key for safe retries. A random key is generated when
+            omitted (API-key callers must send one).
 
         Returns
         -------
@@ -453,7 +569,7 @@ class AsyncJobsResource:
                 "payload": payload,
                 "resource": resource,
             },
-            idempotency_key=idempotency_key,
+            idempotency_key=ensure_idempotency_key(idempotency_key),
         )
         return JobSubmitResponse.model_validate(data)
 
@@ -470,7 +586,8 @@ class AsyncJobsResource:
         jobs : sequence of JobSubmitRequest or dict
             Job specifications to submit.
         idempotency_key : str or None, optional
-            Optional idempotency key for safe retries.
+            Idempotency key for safe retries. A random key is generated when
+            omitted (API-key callers must send one).
 
         Returns
         -------
@@ -486,19 +603,92 @@ class AsyncJobsResource:
             "POST",
             ROUTES["jobs_submit_multiple"],
             json=body,
-            idempotency_key=idempotency_key,
+            idempotency_key=ensure_idempotency_key(idempotency_key),
         )
         return JobSubmitMultipleResponse.model_validate(data)
 
-    async def list(self) -> ListJobsResponse:
-        """List jobs belonging to the authenticated caller.
+    async def estimate(
+        self,
+        job_type: str,
+        payload: dict[str, Any],
+        *,
+        resource: str = "default",
+    ) -> JobEstimateResponse:
+        """Estimate the wallet hold for one job at the caller's tier.
+
+        Uses the same catalog reservation math as submit. Incomplete payloads
+        may still return a scaled estimate (``assumptions["validated"]`` is
+        false).
+
+        Parameters
+        ----------
+        job_type : str
+            Catalog job type.
+        payload : dict
+            Type-specific request payload.
+        resource : str, optional
+            Compute resource tier (default ``default``).
+
+        Returns
+        -------
+        JobEstimateResponse
+            Estimated cost, tier, rate, and assumptions.
+        """
+        data = await self._http.request(
+            "POST",
+            ROUTES["jobs_estimate"],
+            json={"job_type": job_type, "payload": payload, "resource": resource},
+        )
+        return JobEstimateResponse.model_validate(data)
+
+    async def list(
+        self,
+        *,
+        limit: int | None = None,
+        offset: int | None = None,
+        status: str | Sequence[str] | None = None,
+        job_type: str | None = None,
+        q: str | None = None,
+        sort: str | None = None,
+    ) -> ListJobsResponse:
+        """List standalone jobs belonging to the authenticated caller.
+
+        Workflow step jobs are excluded. Results are paginated.
+
+        Parameters
+        ----------
+        limit : int or None, optional
+            Page size (1-100).
+        offset : int or None, optional
+            Page offset.
+        status : str or sequence of str or None, optional
+            Keep only these statuses (e.g. ``["queued", "running"]``).
+        job_type : str or None, optional
+            Keep only this catalog job type.
+        q : str or None, optional
+            Case-insensitive job name search.
+        sort : str or None, optional
+            ``created_at``, ``finished_at``, ``runtime_seconds``, or
+            ``job_name``; prefix ``-`` for descending (default
+            ``-created_at``).
 
         Returns
         -------
         ListJobsResponse
-            Job summaries for the current account.
+            Page of jobs (``items`` carries full rows).
         """
-        data = await self._http.request("GET", ROUTES["jobs_list"])
+        data = await self._http.request(
+            "GET",
+            ROUTES["jobs_list"],
+            params=_list_params(
+                limit=limit,
+                offset=offset,
+                status=status,
+                job_type=job_type,
+                q=q,
+                sort=sort,
+            ),
+        )
         return ListJobsResponse.model_validate(data)
 
     async def info(self, process_id: str) -> JobInfoResponse:
@@ -701,7 +891,8 @@ class AsyncJobsResource:
         resource : str, optional
             Compute resource tier (default ``default``).
         idempotency_key : str or None, optional
-            Optional idempotency key for safe retries.
+            Idempotency key for safe retries. A random key is generated when
+            omitted (API-key callers must send one).
         poll_interval : float, optional
             Seconds between status polls.
         timeout : float, optional

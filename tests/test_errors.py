@@ -4,9 +4,15 @@ import pytest
 
 from cognichem_client.errors import (
     AuthenticationError,
+    BadRequestError,
+    CogniChemError,
     ConflictError,
     ForbiddenError,
+    GoneError,
+    PayloadTooLargeError,
+    PaymentRequiredError,
     RateLimitError,
+    ServerError,
     ValidationError,
     raise_for_problem,
 )
@@ -67,3 +73,40 @@ def test_validation_errors_list() -> None:
 def test_rate_limit() -> None:
     with pytest.raises(RateLimitError):
         raise_for_problem(429, {"detail": "Slow down"})
+
+
+@pytest.mark.parametrize(
+    ("status", "cls"),
+    [
+        (400, BadRequestError),
+        (402, PaymentRequiredError),
+        (410, GoneError),
+        (413, PayloadTooLargeError),
+        (503, ServerError),
+    ],
+)
+def test_status_classes(status: int, cls: type[CogniChemError]) -> None:
+    with pytest.raises(cls):
+        raise_for_problem(status, {"detail": "nope"})
+
+
+def test_problem_type_slug_code_and_retryability() -> None:
+    with pytest.raises(BadRequestError) as exc:
+        raise_for_problem(
+            400,
+            {
+                "type": "/api/v1/problems/missing-idempotency-key",
+                "title": "Missing Idempotency-Key",
+                "status": 400,
+                "detail": "Idempotency-Key is required for API-key mutations",
+                "retryability": "validation",
+            },
+        )
+    assert exc.value.code == "missing-idempotency-key"
+    assert exc.value.retryability == "validation"
+
+
+def test_generic_http_problem_code_is_unknown() -> None:
+    with pytest.raises(CogniChemError) as exc:
+        raise_for_problem(500, {"type": "/api/v1/problems/http-500", "detail": "x"})
+    assert exc.value.code == "unknown"

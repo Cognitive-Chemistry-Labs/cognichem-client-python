@@ -28,6 +28,9 @@ class CogniChemError(Exception):
         Stable client-side error code (e.g. ``api-key-limit-exceeded``).
     body : any, optional
         Raw parsed response body for debugging.
+    retryability : str or None, optional
+        Server retry class: ``validation``, ``auth``, ``quota``, ``conflict``,
+        ``upstream``, ``timeout``, or ``terminal``.
 
     Attributes
     ----------
@@ -48,7 +51,11 @@ class CogniChemError(Exception):
     code : str
         Stable client-side error code.
     body : any
-        Raw response body, if any.
+        Raw response body, if any. Problem extensions (for example
+        ``cap_usd`` on ``session-spend-cap``, or ``proposal`` on
+        ``estimate-changed``) live here.
+    retryability : str or None
+        Server retry class, if any.
     """
 
     def __init__(
@@ -63,6 +70,7 @@ class CogniChemError(Exception):
         errors: list[Any] | None = None,
         code: str = "unknown",
         body: Any = None,
+        retryability: str | None = None,
     ) -> None:
         """Store problem-detail fields on the exception instance.
 
@@ -86,6 +94,8 @@ class CogniChemError(Exception):
             Stable client-side error code.
         body : any, optional
             Raw parsed response body.
+        retryability : str or None, optional
+            Server retry class.
         """
         super().__init__(message)
         self.message = message
@@ -97,6 +107,18 @@ class CogniChemError(Exception):
         self.errors = errors
         self.code = code
         self.body = body
+        self.retryability = retryability
+
+
+class BadRequestError(CogniChemError):
+    """Raised for HTTP 400 Bad Request responses.
+
+    Notes
+    -----
+    Inherits attributes from :class:`CogniChemError`. Operational failures
+    such as ``missing-idempotency-key`` or ``insufficient_wallet`` on
+    workflow run create arrive as 400.
+    """
 
 
 class AuthenticationError(CogniChemError):
@@ -105,6 +127,16 @@ class AuthenticationError(CogniChemError):
     Notes
     -----
     Inherits attributes from :class:`CogniChemError`.
+    """
+
+
+class PaymentRequiredError(CogniChemError):
+    """Raised for HTTP 402 Payment Required responses.
+
+    Notes
+    -----
+    The wallet cannot cover the hold (``insufficient-wallet``). Inherits
+    attributes from :class:`CogniChemError`.
     """
 
 
@@ -136,6 +168,28 @@ class ConflictError(CogniChemError):
     """
 
 
+class GoneError(CogniChemError):
+    """Raised for HTTP 410 Gone responses.
+
+    Notes
+    -----
+    Examples: an expired Assistant proposal (``proposal-expired``) or a
+    ``?record=`` download whose parent artifact expired. Inherits attributes
+    from :class:`CogniChemError`.
+    """
+
+
+class PayloadTooLargeError(CogniChemError):
+    """Raised for HTTP 413 Content Too Large responses.
+
+    Notes
+    -----
+    Examples: an upload over the size cap or storage quota, or a WorkflowSpec
+    over the byte cap (Diagnostic list on ``errors``). Inherits attributes
+    from :class:`CogniChemError`.
+    """
+
+
 class ValidationError(CogniChemError):
     """Raised for HTTP 422 Unprocessable Entity responses.
 
@@ -155,6 +209,16 @@ class RateLimitError(CogniChemError):
     """
 
 
+class ServerError(CogniChemError):
+    """Raised for HTTP 5xx responses.
+
+    Notes
+    -----
+    Usually safe to retry (``retryability`` is ``upstream`` or ``timeout``).
+    Inherits attributes from :class:`CogniChemError`.
+    """
+
+
 class PollTimeoutError(CogniChemError):
     """Raised when a polling wait exceeds the configured timeout.
 
@@ -167,6 +231,8 @@ class PollTimeoutError(CogniChemError):
 class ProcessFailedError(CogniChemError):
     """Raised when a job, inference, or utility ends in ``error`` status.
 
+    Also raised when a workflow run ends in ``failed`` status.
+
     Notes
     -----
     Inherits attributes from :class:`CogniChemError`.
@@ -174,7 +240,7 @@ class ProcessFailedError(CogniChemError):
 
 
 class ProcessCancelledError(CogniChemError):
-    """Raised when a job ends in ``cancelled`` status.
+    """Raised when a job or workflow run ends in ``cancelled`` status.
 
     Notes
     -----
@@ -182,7 +248,7 @@ class ProcessCancelledError(CogniChemError):
     """
 
 
-_API_KEY_LIMIT_SUFFIX = "/problems/api-key-limit-exceeded"
+_PROBLEMS_SEGMENT = "/problems/"
 _DUPLICATE_NAME_DETAIL = "An API key with this name already exists"
 
 
@@ -250,15 +316,19 @@ def _error_code(status: int, body: dict[str, Any], message: str) -> str:
     Returns
     -------
     str
-        Client error code such as ``api-key-limit-exceeded``,
-        ``duplicate-name``, or ``unknown``.
+        Client error code: ``duplicate-name``, the problem ``type`` slug
+        (e.g. ``api-key-limit-exceeded``, ``missing-idempotency-key``,
+        ``session-spend-cap``), or ``unknown`` for generic ``http-<status>``
+        problems.
     """
-    raw_type = body.get("type")
-    problem_type = raw_type if isinstance(raw_type, str) else ""
-    if status == 403 and problem_type.endswith(_API_KEY_LIMIT_SUFFIX):
-        return "api-key-limit-exceeded"
     if status == 409 and message == _DUPLICATE_NAME_DETAIL:
         return "duplicate-name"
+    raw_type = body.get("type")
+    problem_type = raw_type if isinstance(raw_type, str) else ""
+    if _PROBLEMS_SEGMENT in problem_type:
+        slug = problem_type.rsplit(_PROBLEMS_SEGMENT, 1)[1].strip("/")
+        if slug and not slug.startswith("http-"):
+            return slug
     return "unknown"
 
 
@@ -275,18 +345,28 @@ def _exception_class(status: int) -> type[CogniChemError]:
     type of CogniChemError
         Exception class to raise.
     """
+    if status == 400:
+        return BadRequestError
     if status == 401:
         return AuthenticationError
+    if status == 402:
+        return PaymentRequiredError
     if status == 403:
         return ForbiddenError
     if status == 404:
         return NotFoundError
     if status == 409:
         return ConflictError
+    if status == 410:
+        return GoneError
+    if status == 413:
+        return PayloadTooLargeError
     if status == 422:
         return ValidationError
     if status == 429:
         return RateLimitError
+    if status >= 500:
+        return ServerError
     return CogniChemError
 
 
@@ -324,6 +404,9 @@ def raise_for_problem(
     request_id = (
         body.get("request_id") if isinstance(body.get("request_id"), str) else None
     )
+    retryability = (
+        body.get("retryability") if isinstance(body.get("retryability"), str) else None
+    )
     errors = body.get("errors") if isinstance(body.get("errors"), list) else None
     if status == 422 and errors is None and isinstance(body.get("detail"), list):
         errors = body["detail"]
@@ -339,4 +422,5 @@ def raise_for_problem(
         errors=errors,
         code=code,
         body=body,
+        retryability=retryability,
     )

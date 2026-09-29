@@ -1,4 +1,4 @@
-"""Pydantic models for CogniChem API request/response envelopes."""
+"""Core request/response models: auth, API keys, jobs, inference, utilities."""
 
 from __future__ import annotations
 
@@ -44,13 +44,24 @@ class ApiKeyListItem(BaseModel):
     key_prefix : str or None
         Non-secret prefix for display.
     scopes : list of str
-        Reserved scopes (not enforced yet).
+        Enforced scopes (``read`` and/or ``write``).
     created_at : datetime
         Creation timestamp.
     last_used_at : datetime or None
         Last successful authentication time, if any.
     rotated_at : datetime or None
         Last rotation time, if any.
+    expires_at : datetime or None
+        When the key stops authenticating, if set.
+    revoked_at : datetime or None
+        Soft-revoke timestamp, if any.
+    spend_ceiling_usd : float or None
+        Per-key USD spend cap (``None`` means wallet-only).
+    spend_accrued_usd : float or None
+        USD accrued in the current spend window.
+    allow_structure_search : bool
+        Whether the key may send SMILES to ChEMBL similarity / substructure
+        search via ``/lookup/chembl``.
     """
 
     id: str
@@ -60,6 +71,11 @@ class ApiKeyListItem(BaseModel):
     created_at: datetime
     last_used_at: datetime | None = None
     rotated_at: datetime | None = None
+    expires_at: datetime | None = None
+    revoked_at: datetime | None = None
+    spend_ceiling_usd: float | None = None
+    spend_accrued_usd: float | None = None
+    allow_structure_search: bool = False
 
 
 class ApiKeyListResponse(BaseModel):
@@ -137,19 +153,106 @@ class JobSubmitMultipleResponse(BaseModel):
     process_ids: list[str] = Field(default_factory=list)
 
 
+class JobEstimateResponse(BaseModel):
+    """Wallet-reservation estimate for one job at the caller's tier.
+
+    Attributes
+    ----------
+    cost : float
+        Soft-hold estimate in USD.
+    tier : int
+        Caller subscription tier used for the rate.
+    resource : str
+        Resolved compute resource.
+    job_type : str
+        Catalog job type.
+    expected_runtime_sec : float
+        Catalog runtime assumption in seconds.
+    rate_per_sec : float
+        USD per second at ``tier`` and ``resource``.
+    assumptions : dict
+        Estimate basis (``validated`` is false for incomplete payloads).
+    """
+
+    cost: float
+    tier: int
+    resource: str
+    job_type: str
+    expected_runtime_sec: float
+    rate_per_sec: float
+    assumptions: dict[str, Any] = Field(default_factory=dict)
+
+
+class JobListItem(BaseModel):
+    """One Job Queue row.
+
+    Attributes
+    ----------
+    process_id : str
+        Job process identifier.
+    job_name : str
+        User-chosen job name.
+    job_type : str
+        Catalog job type.
+    resource : str
+        Compute resource.
+    status : str
+        ``queued``, ``dispatched``, ``running``, ``completed``, ``error``, or
+        ``cancelled``.
+    message : str
+        Latest status message.
+    created_at, started_at, finished_at : str or None
+        ISO-8601 lifecycle timestamps.
+    runtime_seconds : float
+        Billed runtime so far.
+    expected_billing_cost : float or None
+        Reservation estimate (USD).
+    charged_amount : float or None
+        Final charge (USD) once billed.
+    result_artifact_id : str or None
+        Durable result artifact id, when stored.
+    """
+
+    process_id: str
+    job_name: str
+    job_type: str
+    resource: str
+    status: str
+    message: str = ""
+    created_at: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    runtime_seconds: float = 0.0
+    expected_billing_cost: float | None = None
+    charged_amount: float | None = None
+    result_artifact_id: str | None = None
+
+
 class ListJobsResponse(BaseModel):
-    """Response from listing user jobs.
+    """Paginated standalone jobs (workflow step jobs are excluded).
 
     Attributes
     ----------
     job_names : list of str
-        Job names.
+        Job names (parallel to ``job_pids``).
     job_pids : list of str
         Corresponding process IDs.
+    items : list of JobListItem
+        Full rows for the same page.
+    total : int
+        Total matching jobs.
+    limit : int
+        Page size.
+    offset : int
+        Page offset.
     """
 
     job_names: list[str] = Field(default_factory=list)
     job_pids: list[str] = Field(default_factory=list)
+    items: list[JobListItem] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 100
+    offset: int = 0
 
 
 class ProcessStatus(BaseModel):
@@ -163,11 +266,15 @@ class ProcessStatus(BaseModel):
         Current status string (e.g. ``queued``, ``running``, ``completed``).
     message : str or None
         Optional status message.
+    result_artifact_id : str or None
+        Durable result artifact id for jobs, when stored. Inspect it with
+        ``client.artifacts`` instead of downloading the whole zip.
     """
 
     process_id: str
     status: str
     message: str | None = None
+    result_artifact_id: str | None = None
 
 
 class JobInfoResponse(BaseModel):
@@ -283,3 +390,47 @@ class AuthCheckResponse(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     message: str | None = None
+
+
+class HealthResponse(BaseModel):
+    """Response from ``GET /health`` or ``GET /ready``.
+
+    Attributes
+    ----------
+    status : str
+        ``ok`` (health) or ``ready`` (readiness).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    status: str
+
+
+class WalletBalance(BaseModel):
+    """Wallet balance and USD reserved by in-flight jobs, runs and turns.
+
+    Attributes
+    ----------
+    balance : float
+        Wallet balance in USD.
+    active_reserved : float
+        USD currently held by active reservations.
+    """
+
+    balance: float
+    active_reserved: float
+
+
+class ServerSentEvent(BaseModel):
+    """One ``text/event-stream`` frame.
+
+    Attributes
+    ----------
+    event : str
+        Event name (``message`` when the frame had no ``event:`` line).
+    data : any
+        Parsed JSON ``data``, or the raw string when it is not JSON.
+    """
+
+    event: str
+    data: Any = None
