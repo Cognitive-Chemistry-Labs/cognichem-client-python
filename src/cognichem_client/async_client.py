@@ -5,13 +5,21 @@ from __future__ import annotations
 import os
 
 from cognichem_client._http import AsyncHttpClient
-from cognichem_client.constants import DEFAULT_BASE_URL, DEFAULT_HTTP_TIMEOUT
+from cognichem_client.constants import DEFAULT_BASE_URL, DEFAULT_HTTP_TIMEOUT, ROUTES
 from cognichem_client.resources.api_keys import AsyncApiKeysResource
+from cognichem_client.resources.artifacts import AsyncArtifactsResource
 from cognichem_client.resources.auth import AsyncAuthResource
+from cognichem_client.resources.chat import AsyncChatResource
+from cognichem_client.resources.events import AsyncEventsResource
 from cognichem_client.resources.inference import AsyncInferenceResource
 from cognichem_client.resources.jobs import AsyncJobsResource
+from cognichem_client.resources.lookup import AsyncLookupResource
+from cognichem_client.resources.reference import AsyncReferenceResource
 from cognichem_client.resources.usage import AsyncUsageResource
 from cognichem_client.resources.utils import AsyncUtilsResource
+from cognichem_client.resources.wallet import AsyncWalletResource
+from cognichem_client.resources.workflows import AsyncWorkflowsResource
+from cognichem_client.types import HealthResponse
 
 
 class AsyncCogniChem:
@@ -43,6 +51,22 @@ class AsyncCogniChem:
         Short-running utility endpoints.
     usage : AsyncUsageResource
         Usage limit queries.
+    workflows : AsyncWorkflowsResource
+        Workflow validate / estimate / templates, plus ``runs`` and
+        ``definitions``.
+    artifacts : AsyncArtifactsResource
+        Durable job / workflow artifacts (list, inspect, upload, download).
+    events : AsyncEventsResource
+        Job and workflow run completion events feed.
+    wallet : AsyncWalletResource
+        Wallet balance.
+    lookup : AsyncLookupResource
+        Science database lookups (PubChem, ChEMBL, Open Targets, UniProt,
+        RCSB PDB).
+    reference : AsyncReferenceResource
+        Reference-KG literature search.
+    chat : AsyncChatResource
+        CogniChem Assistant chat (JWT only).
     """
 
     def __init__(
@@ -78,6 +102,13 @@ class AsyncCogniChem:
         self.inference = AsyncInferenceResource(self._http)
         self.utils = AsyncUtilsResource(self._http)
         self.usage = AsyncUsageResource(self._http)
+        self.workflows = AsyncWorkflowsResource(self._http)
+        self.artifacts = AsyncArtifactsResource(self._http)
+        self.events = AsyncEventsResource(self._http)
+        self.wallet = AsyncWalletResource(self._http)
+        self.lookup = AsyncLookupResource(self._http)
+        self.reference = AsyncReferenceResource(self._http)
+        self.chat = AsyncChatResource(self._http)
 
     @classmethod
     def from_env(
@@ -117,6 +148,33 @@ class AsyncCogniChem:
             base_url=os.environ.get(base_url_var) or None,
             timeout=timeout,
         )
+
+    async def health(self) -> HealthResponse:
+        """Check API liveness (``GET /health``, no auth needed).
+
+        Returns
+        -------
+        HealthResponse
+            ``status`` is ``ok`` when the API is up.
+        """
+        data = await self._http.request("GET", ROUTES["health"])
+        return HealthResponse.model_validate(data)
+
+    async def ready(self) -> HealthResponse:
+        """Check API readiness (``GET /ready``, no auth needed).
+
+        Returns
+        -------
+        HealthResponse
+            ``status`` is ``ready`` when dependencies are reachable.
+
+        Raises
+        ------
+        ServerError
+            When the API is not ready (503).
+        """
+        data = await self._http.request("GET", ROUTES["ready"])
+        return HealthResponse.model_validate(data)
 
     async def aclose(self) -> None:
         """Close the underlying async HTTP client and free connections.

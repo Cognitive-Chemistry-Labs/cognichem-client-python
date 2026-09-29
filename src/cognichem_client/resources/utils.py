@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from cognichem_client._http import AsyncHttpClient, HttpClient
+from cognichem_client._http import (
+    AsyncHttpClient,
+    HttpClient,
+    ensure_idempotency_key,
+)
 from cognichem_client.constants import (
     DEFAULT_FAST_POLL_INTERVAL,
     DEFAULT_FAST_TIMEOUT,
@@ -55,7 +59,8 @@ class UtilsResource:
         payload : dict
             Type-specific request payload.
         idempotency_key : str or None, optional
-            Optional idempotency key for safe retries.
+            Idempotency key for safe retries. A random key is generated when
+            omitted (API-key callers must send one).
 
         Returns
         -------
@@ -66,7 +71,7 @@ class UtilsResource:
             "POST",
             ROUTES["utils_submit"],
             json={"utility_type": utility_type, "payload": payload},
-            idempotency_key=idempotency_key,
+            idempotency_key=ensure_idempotency_key(idempotency_key),
         )
         return JobSubmitResponse.model_validate(data)
 
@@ -135,6 +140,26 @@ class UtilsResource:
         )
         return MessageResponse.model_validate(data)
 
+    def cancel(self, process_id: str) -> MessageResponse:
+        """Request cancellation of a queued or running utility process.
+
+        Parameters
+        ----------
+        process_id : str
+            Process identifier.
+
+        Returns
+        -------
+        MessageResponse
+            Server confirmation message.
+        """
+        data = self._http.request(
+            "POST",
+            ROUTES["utils_cancel"],
+            params={"process_id": process_id},
+        )
+        return MessageResponse.model_validate(data)
+
     def wait(
         self,
         process_id: str,
@@ -197,7 +222,8 @@ class UtilsResource:
         payload : dict
             Type-specific request payload.
         idempotency_key : str or None, optional
-            Optional idempotency key for safe retries.
+            Idempotency key for safe retries. A random key is generated when
+            omitted (API-key callers must send one).
         poll_interval : float, optional
             Seconds between status polls.
         timeout : float, optional
@@ -265,7 +291,8 @@ class AsyncUtilsResource:
         payload : dict
             Type-specific request payload.
         idempotency_key : str or None, optional
-            Optional idempotency key for safe retries.
+            Idempotency key for safe retries. A random key is generated when
+            omitted (API-key callers must send one).
 
         Returns
         -------
@@ -276,7 +303,7 @@ class AsyncUtilsResource:
             "POST",
             ROUTES["utils_submit"],
             json={"utility_type": utility_type, "payload": payload},
-            idempotency_key=idempotency_key,
+            idempotency_key=ensure_idempotency_key(idempotency_key),
         )
         return JobSubmitResponse.model_validate(data)
 
@@ -345,6 +372,26 @@ class AsyncUtilsResource:
         )
         return MessageResponse.model_validate(data)
 
+    async def cancel(self, process_id: str) -> MessageResponse:
+        """Request cancellation of a queued or running utility process.
+
+        Parameters
+        ----------
+        process_id : str
+            Process identifier.
+
+        Returns
+        -------
+        MessageResponse
+            Server confirmation message.
+        """
+        data = await self._http.request(
+            "POST",
+            ROUTES["utils_cancel"],
+            params={"process_id": process_id},
+        )
+        return MessageResponse.model_validate(data)
+
     async def wait(
         self,
         process_id: str,
@@ -407,7 +454,8 @@ class AsyncUtilsResource:
         payload : dict
             Type-specific request payload.
         idempotency_key : str or None, optional
-            Optional idempotency key for safe retries.
+            Idempotency key for safe retries. A random key is generated when
+            omitted (API-key callers must send one).
         poll_interval : float, optional
             Seconds between status polls.
         timeout : float, optional

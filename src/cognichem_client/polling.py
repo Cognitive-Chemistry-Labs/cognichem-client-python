@@ -1,10 +1,11 @@
-"""Shared polling helpers for long-running processes."""
+"""Shared polling helpers for long-running processes and workflow runs."""
 
 from __future__ import annotations
 
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
+from typing import Protocol, TypeVar
 
 from cognichem_client.constants import POLLABLE_TERMINAL_STATUSES
 from cognichem_client.errors import (
@@ -13,6 +14,21 @@ from cognichem_client.errors import (
     ProcessFailedError,
 )
 from cognichem_client.types import ProcessStatus
+
+
+class _HasStatus(Protocol):
+    """Anything with a string ``status`` (process status, workflow run)."""
+
+    @property
+    def status(self) -> str:
+        """Current status string."""
+        ...
+
+
+S = TypeVar("S", bound=_HasStatus)
+
+_PROCESS_FAILED = frozenset({"error"})
+_RUN_FAILED = frozenset({"failed"})
 
 
 def wait_for_terminal(
@@ -53,20 +69,14 @@ def wait_for_terminal(
     ProcessCancelledError
         If ``raise_on_failure`` is true and status is ``cancelled``.
     """
-    deadline = time.monotonic() + timeout
-    while True:
-        status = status_fn()
-        if status.status in terminal_statuses:
-            if raise_on_failure:
-                _raise_if_failed(status)
-            return status
-        if time.monotonic() >= deadline:
-            raise PollTimeoutError(
-                f"Timed out after {timeout}s waiting for process "
-                f"{status.process_id} (last status={status.status!r})",
-                status=None,
-            )
-        time.sleep(poll_interval)
+    return poll_until(
+        status_fn,
+        poll_interval=poll_interval,
+        timeout=timeout,
+        stop_statuses=terminal_statuses,
+        subject=lambda s: f"process {s.process_id}",
+        failed_statuses=_PROCESS_FAILED if raise_on_failure else None,
+    )
 
 
 async def await_for_terminal(
@@ -107,44 +117,193 @@ async def await_for_terminal(
     ProcessCancelledError
         If ``raise_on_failure`` is true and status is ``cancelled``.
     """
-    deadline = time.monotonic() + timeout
-    while True:
-        status = await status_fn()
-        if status.status in terminal_statuses:
-            if raise_on_failure:
-                _raise_if_failed(status)
-            return status
-        if time.monotonic() >= deadline:
-            raise PollTimeoutError(
-                f"Timed out after {timeout}s waiting for process "
-                f"{status.process_id} (last status={status.status!r})",
-                status=None,
-            )
-        await asyncio.sleep(poll_interval)
+    return await apoll_until(
+        status_fn,
+        poll_interval=poll_interval,
+        timeout=timeout,
+        stop_statuses=terminal_statuses,
+        subject=lambda s: f"process {s.process_id}",
+        failed_statuses=_PROCESS_FAILED if raise_on_failure else None,
+    )
 
 
-def _raise_if_failed(status: ProcessStatus) -> None:
-    """Raise for failed or cancelled terminal statuses.
+def poll_until(
+    fetch: Callable[[], S],
+    *,
+    poll_interval: float,
+    timeout: float,
+    stop_statuses: frozenset[str],
+    subject: Callable[[S], str],
+    failed_statuses: frozenset[str] | None = None,
+) -> S:
+    """Poll ``fetch`` until its ``status`` is in ``stop_statuses``.
 
     Parameters
     ----------
-    status : ProcessStatus
-        Terminal status payload.
+    fetch : callable
+        Zero-argument callable returning an object with a ``status``.
+    poll_interval : float
+        Seconds to sleep between polls.
+    timeout : float
+        Maximum seconds to wait before raising :class:`PollTimeoutError`.
+    stop_statuses : frozenset of str
+        Statuses that end the wait.
+    subject : callable
+        Describes the polled object for error messages.
+    failed_statuses : frozenset of str or None, optional
+        When set, raise :class:`ProcessFailedError` for these statuses and
+        :class:`ProcessCancelledError` for ``cancelled``.
+
+    Returns
+    -------
+    object
+        The last fetched object (its status is in ``stop_statuses``).
+
+    Raises
+    ------
+    PollTimeoutError
+        If ``timeout`` elapses first.
+    ProcessFailedError
+        If ``failed_statuses`` is set and the final status is in it.
+    ProcessCancelledError
+        If ``failed_statuses`` is set and the final status is ``cancelled``.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        current = fetch()
+        if current.status in stop_statuses:
+            if failed_statuses is not None:
+                _raise_if_failed(current, subject(current), failed_statuses)
+            return current
+        if time.monotonic() >= deadline:
+            raise _timeout(timeout, subject(current), current.status)
+        time.sleep(poll_interval)
+
+
+async def apoll_until(
+    fetch: Callable[[], Awaitable[S]],
+    *,
+    poll_interval: float,
+    timeout: float,
+    stop_statuses: frozenset[str],
+    subject: Callable[[S], str],
+    failed_statuses: frozenset[str] | None = None,
+) -> S:
+    """Asynchronously poll ``fetch`` until its ``status`` is in ``stop_statuses``.
+
+    Parameters
+    ----------
+    fetch : callable
+        Zero-argument async callable returning an object with a ``status``.
+    poll_interval : float
+        Seconds to sleep between polls.
+    timeout : float
+        Maximum seconds to wait before raising :class:`PollTimeoutError`.
+    stop_statuses : frozenset of str
+        Statuses that end the wait.
+    subject : callable
+        Describes the polled object for error messages.
+    failed_statuses : frozenset of str or None, optional
+        When set, raise :class:`ProcessFailedError` for these statuses and
+        :class:`ProcessCancelledError` for ``cancelled``.
+
+    Returns
+    -------
+    object
+        The last fetched object (its status is in ``stop_statuses``).
+
+    Raises
+    ------
+    PollTimeoutError
+        If ``timeout`` elapses first.
+    ProcessFailedError
+        If ``failed_statuses`` is set and the final status is in it.
+    ProcessCancelledError
+        If ``failed_statuses`` is set and the final status is ``cancelled``.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        current = await fetch()
+        if current.status in stop_statuses:
+            if failed_statuses is not None:
+                _raise_if_failed(current, subject(current), failed_statuses)
+            return current
+        if time.monotonic() >= deadline:
+            raise _timeout(timeout, subject(current), current.status)
+        await asyncio.sleep(poll_interval)
+
+
+def run_failure_statuses(raise_on_failure: bool) -> frozenset[str] | None:
+    """Return the workflow-run failure set when ``raise_on_failure`` is set.
+
+    Parameters
+    ----------
+    raise_on_failure : bool
+        Whether the caller wants failures raised.
+
+    Returns
+    -------
+    frozenset of str or None
+        ``{"failed"}`` or ``None``.
+    """
+    return _RUN_FAILED if raise_on_failure else None
+
+
+def _timeout(timeout: float, subject: str, status: str) -> PollTimeoutError:
+    """Build the timeout error raised by the poll loops.
+
+    Parameters
+    ----------
+    timeout : float
+        Configured timeout in seconds.
+    subject : str
+        Description of the polled object.
+    status : str
+        Last observed status.
+
+    Returns
+    -------
+    PollTimeoutError
+        Error to raise.
+    """
+    return PollTimeoutError(
+        f"Timed out after {timeout}s waiting for {subject} (last status={status!r})",
+        status=None,
+    )
+
+
+def _raise_if_failed(
+    current: _HasStatus, subject: str, failed_statuses: frozenset[str]
+) -> None:
+    """Raise for failed or cancelled final statuses.
+
+    Parameters
+    ----------
+    current : object
+        Final polled object.
+    subject : str
+        Description of the polled object.
+    failed_statuses : frozenset of str
+        Statuses that count as failure.
 
     Raises
     ------
     ProcessFailedError
-        When ``status.status`` is ``error``.
+        When the status is in ``failed_statuses``.
     ProcessCancelledError
-        When ``status.status`` is ``cancelled``.
+        When the status is ``cancelled``.
     """
-    if status.status == "error":
+    message = getattr(current, "message", None) or getattr(
+        current, "status_message", None
+    )
+    label = subject[:1].upper() + subject[1:]
+    if current.status in failed_statuses:
         raise ProcessFailedError(
-            status.message or f"Process {status.process_id} failed",
-            detail=status.message,
+            message or f"{label} failed",
+            detail=message,
         )
-    if status.status == "cancelled":
+    if current.status == "cancelled":
         raise ProcessCancelledError(
-            status.message or f"Process {status.process_id} was cancelled",
-            detail=status.message,
+            message or f"{label} was cancelled",
+            detail=message,
         )

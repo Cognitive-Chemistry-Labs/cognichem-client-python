@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json as _json
 import re
+import uuid
+from collections.abc import AsyncIterator, Iterable, Iterator
 from typing import Any
 from urllib.parse import urljoin
 
@@ -10,7 +13,7 @@ import httpx
 
 from cognichem_client.constants import DEFAULT_BASE_URL, DEFAULT_HTTP_TIMEOUT
 from cognichem_client.errors import raise_for_problem
-from cognichem_client.types import BinaryResult
+from cognichem_client.types import BinaryResult, ServerSentEvent
 
 _FILENAME_RE = re.compile(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', re.IGNORECASE)
 
@@ -34,6 +37,92 @@ def _parse_filename(content_disposition: str | None) -> str | None:
     if not match:
         return None
     return match.group(1).strip()
+
+
+def ensure_idempotency_key(key: str | None = None) -> str:
+    """Return ``key``, or a fresh random ``Idempotency-Key`` when omitted.
+
+    API-key callers must send ``Idempotency-Key`` on every mutating POST
+    (400 ``missing-idempotency-key`` otherwise), so resources default to a
+    new UUID4 per call. Pass your own key to make retries safe.
+
+    Parameters
+    ----------
+    key : str or None, optional
+        Caller-supplied key.
+
+    Returns
+    -------
+    str
+        ``key`` when given, otherwise a new UUID4 string.
+    """
+    return key or str(uuid.uuid4())
+
+
+class _SseParser:
+    """Incremental ``text/event-stream`` parser (``event:`` / ``data:`` frames)."""
+
+    def __init__(self) -> None:
+        """Start with an empty frame."""
+        self._event = "message"
+        self._data: list[str] = []
+
+    def feed(self, line: str) -> ServerSentEvent | None:
+        """Consume one line and return an event when a frame completes.
+
+        Parameters
+        ----------
+        line : str
+            One line of the stream without its line terminator.
+
+        Returns
+        -------
+        ServerSentEvent or None
+            The completed event on a blank line, otherwise ``None``.
+        """
+        if not line:
+            if not self._data:
+                self._event = "message"
+                return None
+            raw = "\n".join(self._data)
+            try:
+                data: Any = _json.loads(raw)
+            except ValueError:
+                data = raw
+            event = ServerSentEvent(event=self._event, data=data)
+            self._event = "message"
+            self._data = []
+            return event
+        if line.startswith(":"):
+            return None
+        field, _, value = line.partition(":")
+        value = value[1:] if value.startswith(" ") else value
+        if field == "event":
+            self._event = value
+        elif field == "data":
+            self._data.append(value)
+        return None
+
+    def iter_events(self, lines: Iterable[str]) -> Iterator[ServerSentEvent]:
+        """Yield events parsed from ``lines`` (flushes a trailing frame).
+
+        Parameters
+        ----------
+        lines : iterable of str
+            Stream lines without terminators.
+
+        Yields
+        ------
+        ServerSentEvent
+            Parsed events in stream order.
+        """
+        for line in lines:
+            event = self.feed(line)
+            if event is not None:
+                yield event
+        event = self.feed("")
+        if event is not None:
+            yield event
 
 
 class _BaseHttp:
@@ -300,6 +389,7 @@ class HttpClient(_BaseHttp):
         params: dict[str, Any] | None = None,
         json: Any = None,
         data: Any = None,
+        files: Any = None,
         idempotency_key: str | None = None,
         content_type: str | None = "application/json",
         prefer_bearer: bool = False,
@@ -319,6 +409,9 @@ class HttpClient(_BaseHttp):
             JSON body (encoded by httpx).
         data : any, optional
             Form or raw body (e.g. OAuth2 password form).
+        files : any, optional
+            Multipart files (httpx ``files=``). Pass ``content_type=None`` so
+            httpx sets the multipart boundary.
         idempotency_key : str or None, optional
             Optional ``Idempotency-Key`` header.
         content_type : str or None, optional
@@ -345,6 +438,7 @@ class HttpClient(_BaseHttp):
             params=params,
             json=json,
             data=data,
+            files=files,
             headers=self._headers(
                 idempotency_key=idempotency_key,
                 content_type=content_type,
@@ -357,6 +451,59 @@ class HttpClient(_BaseHttp):
         if expect_json:
             return response.json()
         return self._binary_result(response)
+
+    def stream_events(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Any = None,
+        idempotency_key: str | None = None,
+        prefer_bearer: bool = False,
+        timeout: float | None = None,
+    ) -> Iterator[ServerSentEvent]:
+        """Send a request and yield its ``text/event-stream`` events.
+
+        Parameters
+        ----------
+        method : str
+            HTTP method.
+        path : str
+            API path under the configured base URL.
+        json : any, optional
+            JSON body.
+        idempotency_key : str or None, optional
+            Optional ``Idempotency-Key`` header.
+        prefer_bearer : bool, optional
+            Prefer Bearer auth over API key when both are available.
+        timeout : float or None, optional
+            Read timeout for the stream; defaults to the client timeout.
+
+        Yields
+        ------
+        ServerSentEvent
+            Parsed events in stream order.
+
+        Raises
+        ------
+        CogniChemError
+            When the response status is not a success (before any event).
+        """
+        headers = self._headers(
+            idempotency_key=idempotency_key, prefer_bearer=prefer_bearer
+        )
+        headers["Accept"] = "text/event-stream"
+        with self._client.stream(
+            method,
+            self.url(path),
+            json=json,
+            headers=headers,
+            timeout=timeout if timeout is not None else self.timeout,
+        ) as response:
+            if not response.is_success:
+                response.read()
+                self._raise_if_error(response)
+            yield from _SseParser().iter_events(response.iter_lines())
 
 
 class AsyncHttpClient(_BaseHttp):
@@ -447,6 +594,7 @@ class AsyncHttpClient(_BaseHttp):
         params: dict[str, Any] | None = None,
         json: Any = None,
         data: Any = None,
+        files: Any = None,
         idempotency_key: str | None = None,
         content_type: str | None = "application/json",
         prefer_bearer: bool = False,
@@ -466,6 +614,9 @@ class AsyncHttpClient(_BaseHttp):
             JSON body (encoded by httpx).
         data : any, optional
             Form or raw body.
+        files : any, optional
+            Multipart files (httpx ``files=``). Pass ``content_type=None`` so
+            httpx sets the multipart boundary.
         idempotency_key : str or None, optional
             Optional ``Idempotency-Key`` header.
         content_type : str or None, optional
@@ -492,6 +643,7 @@ class AsyncHttpClient(_BaseHttp):
             params=params,
             json=json,
             data=data,
+            files=files,
             headers=self._headers(
                 idempotency_key=idempotency_key,
                 content_type=content_type,
@@ -504,3 +656,63 @@ class AsyncHttpClient(_BaseHttp):
         if expect_json:
             return response.json()
         return self._binary_result(response)
+
+    async def stream_events(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Any = None,
+        idempotency_key: str | None = None,
+        prefer_bearer: bool = False,
+        timeout: float | None = None,
+    ) -> AsyncIterator[ServerSentEvent]:
+        """Send a request and yield its ``text/event-stream`` events.
+
+        Parameters
+        ----------
+        method : str
+            HTTP method.
+        path : str
+            API path under the configured base URL.
+        json : any, optional
+            JSON body.
+        idempotency_key : str or None, optional
+            Optional ``Idempotency-Key`` header.
+        prefer_bearer : bool, optional
+            Prefer Bearer auth over API key when both are available.
+        timeout : float or None, optional
+            Read timeout for the stream; defaults to the client timeout.
+
+        Yields
+        ------
+        ServerSentEvent
+            Parsed events in stream order.
+
+        Raises
+        ------
+        CogniChemError
+            When the response status is not a success (before any event).
+        """
+        headers = self._headers(
+            idempotency_key=idempotency_key, prefer_bearer=prefer_bearer
+        )
+        headers["Accept"] = "text/event-stream"
+        async with self._client.stream(
+            method,
+            self.url(path),
+            json=json,
+            headers=headers,
+            timeout=timeout if timeout is not None else self.timeout,
+        ) as response:
+            if not response.is_success:
+                await response.aread()
+                self._raise_if_error(response)
+            parser = _SseParser()
+            async for line in response.aiter_lines():
+                event = parser.feed(line)
+                if event is not None:
+                    yield event
+            event = parser.feed("")
+            if event is not None:
+                yield event
